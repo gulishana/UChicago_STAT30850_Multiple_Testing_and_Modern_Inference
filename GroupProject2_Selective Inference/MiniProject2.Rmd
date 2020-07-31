@@ -1,0 +1,624 @@
+---
+title: "STAT30850 MiniProject 2"
+author: "Sarah Adilijiang, Yanqing Gui, Hanyang Peng"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.align='center', warning=FALSE, message=FALSE, 
+                      echo=TRUE, eval=TRUE)
+```
+
+
+
+
+## Data Preprocessing
+
+```{r}
+#install.packages('readxl')
+library(readxl)
+
+# download the file at
+# http://www.amstat.org/publications/jse/v19n3/decock/AmesHousing.xls
+data = read_excel('AmesHousing.xls')
+
+Y = log(data[,which(names(data)=='SalePrice')])
+colnames1 = c('Lot Frontage','Lot Area','Overall Qual','Overall Cond','Year Built','Year Remod/Add',
+               'Mas Vnr Area','BsmtFin SF 1','BsmtFin SF 2','Bsmt Unf SF','1st Flr SF','2nd Flr SF','Low Qual Fin SF',
+               'Bsmt Full Bath','Bsmt Half Bath','Full Bath','Half Bath','Bedroom AbvGr','Kitchen AbvGr','TotRms AbvGrd',
+               'Fireplaces','Garage Cars','Garage Area','Wood Deck SF','Open Porch SF','Enclosed Porch',
+               '3Ssn Porch','Screen Porch','Pool Area','Misc Val','Mo Sold','Yr Sold')
+n = dim(data)[1]
+X = matrix(0,n,0)
+for(i in 1:length(colnames1)){
+  X = cbind(X,data[,which(names(data)==colnames1[i])])
+}
+
+X$'Lot Frontage'[is.na(X$'Lot Frontage')] = 0
+X$'Mas Vnr Area'[is.na(X$'Mas Vnr Area')] = 0
+
+tmp = data[,which(names(data)=='Lot Shape')]
+X$LotShape = 1*(tmp=='IR1')+2*(tmp=='IR2')+3*(tmp=='IR3')
+tmp = data[,which(names(data)=='Land Slope')]
+X$LandSlope = 1*(tmp=='Mod')+2*(tmp=='Sev')
+tmp = data[,which(names(data)=='Condition 1')]
+tmp1 = data[,which(names(data)=='Condition 2')]
+X$Railroad = is.element(as.matrix(tmp),c('RRNn','RRAn','RRNe','RRAe')) | is.element(as.matrix(tmp1),c('RRNn','RRAn','RRNe','RRAe'))
+tmp = data[,which(names(data)=='Exter Qual')]
+X$ExterQual = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Exter Cond')]
+X$ExterCond = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Bsmt Qual')]
+X$BsmtQual = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Bsmt Cond')]
+X$BsmtCond = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Bsmt Exposure')]
+X$BsmtExposure = 1*(tmp=='No')+2*(tmp=='Mn')+3*(tmp=='Av')+4*(tmp=='Gd')
+tmp = data[,which(names(data)=='Central Air')]
+X$CentralAir = (tmp=='Y')
+tmp = data[,which(names(data)=='Kitchen Qual')]
+X$KitchenQual = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Functional')]
+X$Functional = 1*(tmp=='Sal')+2*(tmp=='Sev')+3*(tmp=='Maj2')+4*(tmp=='Maj1')+5*(tmp=='Mod')+6*(tmp=='Min2')+7*(tmp=='Min1')+8**(tmp=='Typ')
+tmp = data[,which(names(data)=='Fireplace Qu')]
+X$FireplaceQu = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Garage Finish')]
+X$GarageFinish = 1*(tmp=='Unf')+2*(tmp=='RFn')+3*(tmp=='Fin')
+tmp = data[,which(names(data)=='Garage Qual')]
+X$GarageQual = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Garage Cond')]
+X$GarageCond = 1*(tmp=='Po')+2*(tmp=='Fa')+3*(tmp=='TA')+4*(tmp=='Gd')+5*(tmp=='Ex')
+tmp = data[,which(names(data)=='Paved Drive')]
+X$PavedDrive = 1*(tmp=='P')+2*(tmp=='Y')
+tmp = data[,which(names(data)=='Fence')]
+X$Fence = 1*(tmp=='MnWw')+2*(tmp=='GdWo')+3*(tmp=='MnPrv')+4*(tmp=='GdPrv')
+
+Y = c(as.matrix(Y))
+X = as.matrix(X)
+Y = Y[-which(rowSums(is.na(X))>0)]
+X = X[-which(rowSums(is.na(X))>0),]
+```
+
+```{r}
+# check contructed data
+dim(X)
+length(Y)
+colnames(X)
+```
+
+```{r}
+# construct data frame
+df = data.frame(X,Y)
+dim(df)
+colnames(df)[which(names(df)=="X1st.Flr.SF")] = "1st.Flr.SF"
+colnames(df)[which(names(df)=="X2nd.Flr.SF")] = "2nd.Flr.SF"
+colnames(df)[which(names(df)=="X3Ssn.Porch")] = "3Ssn.Porch"
+colnames(df)
+
+# check if df is the same as original matrix
+sum(df[,-50]!=X)
+sum(df[,"Y"]!=Y)
+```
+
+
+
+
+
+
+
+## Problem 1 - Simpson's Paradox
+
+```{r}
+summary(lm(Y~X[,c(41,4)]))
+summary(lm(Y~X[,c(41,22,4)]))
+```
+
+
+
+
+
+
+
+
+
+
+
+## Problem 2 - Selective Inference
+
+
+### 1. Outliers and Other Unusual Observations
+
+#### (1) Missing values
+
+```{r}
+# check missing values
+sum(is.na(df))
+```
+
+After the previous data preprocessing, there are no more missing values in the data frame now.
+
+
+
+#### (2) Residuals
+
+```{r}
+# plot residuals against fitted y
+model1 = lm(Y~., df)
+plot(model1$fitted.values, model1$residuals, xlab="Fitted Values",ylab="Residuals",
+     main="Residuals vs Fitted Values")
+abline(h=0)
+```
+
+
+
+#### (3) Outliers
+```{r}
+# calculate Studentized residuals
+jack <- rstudent(model1)
+
+# here we use 5% significance level to perform t-test with Bonferroni correction
+alpha = 0.05
+n = nrow(df)
+p = length(model1$coefficients)
+t = qt(1-(alpha/2)/n, df = n-p-1)   # Bonferroni correction: /n
+sum(abs(jack)>t)
+jack[abs(jack)>t][order(abs(jack[abs(jack)>t]),decreasing=TRUE)]
+
+# outlier test
+library(car)
+outliers = outlierTest(model1, n.max=100); outliers
+outliers = as.numeric(names(outliers$rstudent))
+```
+
+
+
+
+#### (4) Large leverage points
+```{r}
+# find large leverage points
+diag_H = hatvalues(model1)    # i.e. diag_H is leverages
+# or : = influence(model1)$hat
+sum(diag_H > 2*mean(diag_H))
+large_leverages = diag_H[diag_H>2*mean(diag_H)]
+large_leverages = as.numeric(names(large_leverages[order(large_leverages,decreasing=TRUE)]))
+large_leverages[1:20]
+
+# find large leverage points via half-normal plot
+library(faraway)
+halfnorm(diag_H, nlab=3, ylab="Leverages", main="Leverages")
+```
+
+
+#### (5) Influential points
+```{r}
+# find influential points with large Cook's Distance
+cook = cooks.distance(model1)
+n = nrow(df)
+sum(cook > 4/n)
+influentials = cook[cook>4/n]
+influentials = as.numeric(names(influentials[order(influentials,decreasing=TRUE)]))
+influentials[1:18]
+
+# find influential points with large Cook's Distance via half-normal plot
+halfnorm(cook, nlab=2, ylab="Cook's Distances", main="Cook's Distances")
+
+test = cook[order(cook,decreasing=TRUE)][8:length(cook)]
+halfnorm(test, nlab=0, ylab="Cook's Distances", 
+         main="Cook's Distances (removing the first 7 points)")
+```
+
+
+
+#### (6) Removing Unusual Observations
+```{r}
+removed = c(influentials[1:18],372,709,561,2874)
+# removed = influentials[1:18]
+df2 = df[-removed, ]
+dim(df2)
+nrow(df) - nrow(df2)
+```
+
+
+Check the residuals again after removing the above unusual observations.
+
+```{r}
+# plot residuals against fitted y
+model2 = lm(Y~., df2)
+plot(model2$fitted.values, model2$residuals, xlab="Fitted Values",ylab="Residuals",
+     main="Residuals vs Fitted Values")
+abline(h=0)
+```
+
+
+
+
+
+
+
+
+### 2. Variable Selection
+
+#### Standardization
+
+```{r}
+library(caret)
+df3= scale(df2[,1:49])
+Y = df2[,50]
+```
+
+
+#### Use cross validation to choose a best t
+
+```{r}
+a = t(df3) 
+S = sign(a%*%(Y))
+S = -S
+S_mat = replicate(ncol(a),S)
+S_mat = as.data.frame(S_mat)
+A = S_mat*as.matrix(a)
+```
+
+```{r}
+Y = as.matrix(Y)
+maxnum = -min(as.matrix(A)%*% Y) 
+multiply = as.matrix(A)%*% Y/maxnum
+```
+
+```{r}
+mse = numeric(9)
+i=1
+for (t in seq(0.1,0.9, by = 0.1)) {
+
+  b = replicate(49,-t)
+  select = which(multiply<b)
+  print("selected variable by screening")
+  print(select)
+  k = sum(multiply<b)
+  
+  Xs=df3[,select] 
+  
+  #A= as.numeric(as.matrix(A))
+  c_lower = -Inf; c_upper = Inf
+  beta=(solve(t(Xs)%*%Xs)%*%t(Xs))%*%Y
+  
+  p=numeric(k)
+  for(l in 1:k){
+    dim(solve(t(Xs)%*%Xs))
+    dim(Xs)
+    signL = S[select]
+    v=(solve(t(Xs)%*%Xs)%*%t(Xs))[l,]
+    v= as.numeric(v)
+    
+    prp_v_y = Y-t((t(Y)%*%v)%*%v/sum(v^2)) #double check whether need ^2
+    
+    coef1 = sum(A[l,]*v)/sum(v^2)
+    coef2 = b[l] - sum(A[l,]*prp_v_y)
+    if(coef1>0){c_upper = min(c_upper,coef2/coef1)} # update the upper endpoint
+    if(coef1<0){c_lower = max(c_lower,coef2/coef1)} # update the lower endpoint
+    beta_l=as.numeric(beta[l,]) 
+    #print("upper,lower")
+    #print(c_upper)
+    #print(c_lower)
+    Y_bar = replicate(length(Y), mean(Y))
+    
+    beta_l = (beta_l-Y_bar%*%v)/(sqrt(sum(v^2))*sd(Y))
+    if (beta_l > 0) {
+      p[l] = (pnorm(c_upper) - pnorm(beta_l))/(pnorm(c_upper)-pnorm(c_lower))
+      if (p[l] < 0) {
+        p[l] = 0
+      }
+    }
+    else {
+      p[l] = (pnorm(beta_l) - pnorm(c_lower) )/(pnorm(c_upper)-pnorm(c_lower))
+      if (p[l] < 0) {
+        p[l] = 0
+      }
+    }
+  }
+  final_selection = select[which(p<0.05)]
+  print("significant variable for p-value < 0.05")
+  print(final_selection)
+  s_data = df2[,c(final_selection, 50)]
+  fit = train(Y~., data = s_data,method = "lm", trControl =  trainControl(method = "cv", number = 10, verboseIter = FALSE))
+  mse[i] <- mean(residuals(fit)^2)
+  i = i+1
+}
+plot(seq(0.1,0.9, by = 0.1), mse, ylab="MSE", main="MSE of different t")
+which(mse == min(mse))
+```
+
+Thus, t = 0.3 has the lowest MSE
+
+
+#### Use the best t=0.3 to perform marginal screening
+```{r}
+  t = 0.3
+  b = replicate(49,-t)
+  select = which(multiply<b)
+  print("selected variable by screening")
+  print(colnames(df3)[select])
+```
+
+
+
+
+### 3. Post-selective Inference: p-values for selected coefficients
+```{r}
+  k = sum(multiply<b)
+  Xs=df3[,select] 
+  c_lower = -Inf; c_upper = Inf
+  beta=(solve(t(Xs)%*%Xs)%*%t(Xs))%*%Y
+  
+  p=numeric(k)
+  for(l in 1:k){
+    dim(solve(t(Xs)%*%Xs))
+    dim(Xs)
+    signL = S[select]
+    v=(solve(t(Xs)%*%Xs)%*%t(Xs))[l,]
+    v= as.numeric(v)
+    prp_v_y = Y-t((t(Y)%*%v)%*%v/sum(v^2)) #double check whether need ^2
+    coef1 = sum(A[l,]*v)/sum(v^2)
+    coef2 = b[l] - sum(A[l,]*prp_v_y)
+    if(coef1>0){c_upper = min(c_upper,coef2/coef1)} # update the upper endpoint
+    if(coef1<0){c_lower = max(c_lower,coef2/coef1)} # update the lower endpoint
+    beta_l=as.numeric(beta[l,]) 
+    Y_bar = replicate(length(Y), mean(Y))
+    
+    beta_l = (beta_l-Y_bar%*%v)/(sqrt(sum(v^2))*sd(Y))
+    if (beta_l > 0) {
+      p[l] = (pnorm(c_upper) - pnorm(beta_l))/(pnorm(c_upper)-pnorm(c_lower))
+      if (p[l] < 0) {
+        p[l] = 0
+      }
+    }
+    else {
+      p[l] = (pnorm(beta_l) - pnorm(c_lower) )/(pnorm(c_upper)-pnorm(c_lower))
+      if (p[l] < 0) {
+        p[l] = 0
+      }
+    }
+  }
+  final_selection = select[which(p<0.05)]
+  print("significant variable for p-value < 0.05")
+  print(colnames(df3)[final_selection])
+  s_data = df2[,c(final_selection, 50)]
+  fit = train(Y~., data = s_data,method = "lm", trControl =  trainControl(method = "cv", number = 10, verboseIter = FALSE))
+  (MSE = mean(residuals(fit)^2))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Problem 3 - Checking Assumptions
+
+For this part, we use the data that have removed the points mentioned in Problem 2 Question 1.
+
+### 1. Constant variance
+
+```{r}
+# plot residuals against fitted y
+model2 = lm(Y~., df2)
+plot(model2$fitted.values, model2$residuals, xlab="Fitted Values",ylab="Residuals",
+     main="Residuals vs Fitted Values")
+abline(h=0)
+
+# use a formal test: Breusch-Pagan test to check the heteroscedasticity
+library(lmtest)
+bptest(model2)
+```
+
+
+
+
+
+
+
+### 2. Normality of errors
+
+```{r, fig.height=5, fig.width=12}
+par(mfrow=c(1,2))
+
+# look at the histogram of the residuals
+hist(model2$residuals, breaks=20, xlab="Residuals", main="Histogram of Residuals")
+
+# Q-Q plot
+qqnorm(model2$residuals, ylab="Residuals")
+qqline(model2$residuals)
+
+# Shapiro-Wilk test
+shapiro.test(model2$residuals)
+```
+
+
+
+
+
+
+
+
+
+
+### 3. Non-independent data (correlations between covariates)
+
+```{r, fig.height=8, fig.width=12}
+# pairwise correlations
+library(corrplot)
+corrs = round(cor(df2[,-50]),3)
+corrplot(corrs, method="color", tl.col="black", tl.srt=90)
+```
+
+```{r}
+# report highly correlated pairs
+index = which((abs(corrs)>0.6)&(corrs!=1))
+pairs = NULL
+for (i in 1:length(index)) {
+    inx = index[i]
+    if (!(rownames(corrs)[inx%/%49+1] %in% pairs[,2])) {
+        pair = c(rownames(corrs)[inx%/%49+1], colnames(corrs)[inx%%49], corrs[inx])
+        pairs = rbind(pairs, pair)
+    }
+}
+rownames(pairs) = NULL
+pairs[order(pairs[,3],decreasing=TRUE),]
+```
+
+
+```{r}
+# check the gvif values of each variables
+library(car)
+gvifs = car::vif(model2)
+gvifs[gvifs>5][order(gvifs[gvifs>5],decreasing=TRUE)]
+```
+
+
+
+
+
+
+
+
+
+
+### 4. Clusters/different distributions within different subpopulations
+
+```{r, fig.height=3, fig.width=12}
+# 28 categorical variables
+cat = c("Overall.Qual","Overall.Cond",
+        "Bsmt.Full.Bath","Bsmt.Half.Bath","Full.Bath","BsmtQual","BsmtCond","BsmtExposure",
+        "Half.Bath","TotRms.AbvGrd","Bedroom.AbvGr","Kitchen.AbvGr","KitchenQual",
+        "Fireplaces","FireplaceQu","CentralAir","LotShape","Functional",
+        "LandSlope","Railroad","ExterQual","ExterCond","PavedDrive","Fence",
+        "GarageFinish","GarageQual","Garage.Cars","GarageCond")
+
+intetest = c("Overall.Qual", "Bsmt.Full.Bath", "FireplaceQu", "Garage.Cars")
+
+par(mfrow=c(1,4))
+for (i in 1:4) {
+    plot(df2[,intetest[i]], model2$residuals, xlab=intetest[i], 
+         ylab="Residuals", main=intetest[i])
+    abline(h=0)
+}
+```
+
+
+```{r, fig.height=3, fig.width=12}
+# plot residuals against fitted y
+par(mfrow=c(1,4))
+for (i in 1:4) {
+    plot(model2$fitted.values, model2$residuals, xlab="Fitted Values",
+         ylab="Residuals", main=intetest[i], col=df2[,intetest[i]]+1)
+    abline(h=0)
+}
+```
+
+
+
+
+
+
+
+### 5. Simulation: non-constant variance problem for selective inference
+
+```{r}
+set.seed(100)
+n=10000
+p=50
+s=15 #true model size
+X=matrix(rnorm(n*p),n,p)
+X=scale(X,center=FALSE,scale=sqrt(colSums(X^2)))
+beta=rep(0,p)
+beta[1:s]=runif(s,-8,8)
+epsilon=c(rnorm(2500,0,20),rnorm(2500,0,1),rnorm(2500,0,30),rnorm(2500,0,15))
+Y=X%*%beta+epsilon
+```
+
+```{r}
+t=0.3
+a=t(X) 
+S = sign(a%*%(Y))
+S = -S
+S_mat = replicate(ncol(a),S)
+dim(S_mat)
+S_mat =as.data.frame(S_mat)
+dim(a) 
+
+A = S_mat*as.matrix(a)
+b = replicate(p,-t)
+Y = as.matrix(Y)
+mx=max(abs(as.matrix(A)%*% Y))
+multiply = as.matrix(A)%*% Y/mx
+(select = which(multiply<b))
+k = sum(multiply<b)
+```
+
+```{r}
+set.seed(100)
+n=10000
+p=50
+s=15 #true model size
+X=matrix(rnorm(n*p),n,p)
+X=scale(X,center=FALSE,scale=sqrt(colSums(X^2)))
+beta=rep(0,p)
+beta[1:s]=runif(s,-8,8)
+epsilon=rnorm(10000)
+Y=X%*%beta+epsilon
+```
+
+```{r}
+t=0.3
+a=t(X) 
+S = sign(a%*%(Y))
+S = -S
+S_mat = replicate(ncol(a),S)
+dim(S_mat)
+S_mat =as.data.frame(S_mat)
+dim(a)
+
+A = S_mat*as.matrix(a)
+b = replicate(p,-t)
+Y = as.matrix(Y)
+mx=max(abs(as.matrix(A)%*% Y))
+multiply = as.matrix(A)%*% Y/mx
+(select = which(multiply<b))
+k = sum(multiply<b)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

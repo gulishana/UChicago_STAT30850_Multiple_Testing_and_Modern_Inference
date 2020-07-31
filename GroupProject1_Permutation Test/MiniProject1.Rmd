@@ -1,0 +1,979 @@
+---
+title: "STAT30850 MiniProject 1"
+author: "Sarah Adilijiang, Yanqing Gui, Hanyang Peng"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.align='center', warning=FALSE, message=FALSE, 
+                      echo=TRUE, eval=FALSE)
+```
+
+save data
+
+```{r}
+save(data, new_data, our_data, member_data, routes, 
+     T_stats, T_stats_member, results, df_results,
+     df_lr, df_lr_member, df_lr_weekday, df_lr_member_weekday,
+     df_lr_member2, df_lr_weekday2, df_lr_member_weekday2,
+     file='MiniProject1.RData')
+```
+
+```{r,eval=TRUE}
+load('MiniProject1.RData')
+library(dplyr)
+```
+
+
+
+
+
+
+
+## 1. Construct Data
+
+```{r}
+# load data
+load("bikedata.RData")
+
+# construct data frame
+colnames(starttime) = c("year","month","day","hour","minute","second")
+data = data.frame(station_start, station_end, duration, starttime,
+                  day_of_week, days_since_Jan1_2010, member, bikenum)
+
+# add a new column to identify a route
+data["route"] = paste(data$station_start, seq="-", data$station_end)
+
+dim(data) # 1342364 * 14
+```
+
+```{r,eval=TRUE}
+# basic data summary
+summary(data)  #bikenum has many NA's
+```
+
+```{r}
+# aggregate data by route, day
+new_data = data %>% group_by(station_start, station_end, year, month, day) %>% 
+    summarise(average_duration=mean(duration), count=length(as.vector(duration)),
+              route = unique(route), day_of_week=unique(day_of_week),
+              days_since_Jan1_2010=unique(days_since_Jan1_2010))
+nrow(new_data)  # 729321
+```
+
+After averaging the duration time for each day, there are 729321 data points.
+
+From now on, we treat these daily average duration as our data points.
+
+```{r,eval=TRUE}
+# how many days have only one recorded duration
+length(which(new_data$count==1)) # 432793
+length(which(new_data$count==1)) / nrow(new_data) # 0.5934191
+```
+
+Among all the data, there are about 60% of the days have only one duration record for that day.
+
+
+
+
+## 2. Select the routes with potential changes
+
+### (1) Day count cutoff (keep: day count >5)
+
+```{r,eval=TRUE}
+# aggregate data by route
+# and calculate the mean and standard deviation of average duration time
+data_by_route = new_data %>% group_by(route) %>% 
+    summarise(duration_mean=mean(average_duration), duration_sd=sd(average_duration),
+              day_count=length(as.vector(average_duration)))
+nrow(data_by_route)  # 12179
+```
+
+There are 12179 distinct routes in total.
+
+```{r, fig.height=8, fig.width=10, eval=TRUE}
+# check the day_counts of each route
+summary(data_by_route$day_count)
+par(mfrow=c(2,1))
+hist(data_by_route$day_count, xlab="day_count", main="Histogram of day_counts of all routes",breaks=100)
+hist(data_by_route$day_count[data_by_route$day_count<=100], xlab="day_count", main="Histogram of day_counts of routes (day_count<=100)", breaks=20)
+```
+
+The first high column is the routes with day_counts <= 5.
+
+Because later we will permute the data within each group of {member, weekday}, which has four sub-groups for each route. To better compare, we only keep routes with day_counts over 4. And it also makes sense to remove the routes with low day_counts since it may have be occasional data which does not well represents the average duration change of one route.
+
+
+```{r, eval=TRUE}
+# keep the routes with day_counts >5
+data_by_route = data_by_route[which(data_by_route$day_count>5), ]
+nrow(data_by_route)  # 8187
+```
+
+After removing the routes with day_counts<=5, there are 8187 distinct routes left.
+
+
+
+
+### (2) Duration time cutoff (keep: sd>300s=5min or sd/mean>1/3)
+
+```{r, fig.height=8, fig.width=10, eval=TRUE}
+# check the standard deviations of duration for each route
+summary(data_by_route$duration_sd)
+
+par(mfrow=c(2,1))
+hist(data_by_route$duration_sd, xlab="sd_duration", main="Histogram of sd_duration of all routes", breaks=100)
+hist(data_by_route$duration_sd[data_by_route$duration_sd<=2000], xlab="sd_duration", main="Histogram of sd_duration of routes (sd<=2000)", breaks=20)
+```
+
+Most of the routes have standard deviation of duration equal to or lower than 300 seconds, which is 5 minutes.
+
+It makes sense to remove these routes since the standard deviation less than 5min indicates no significant time changes according to common sense for routes of general length. But for those short routes, 5min could be a large change. Therefore, we also keep the routes if the standard deviation is larger than 1/3 of the mean of duration.
+
+
+```{r, eval=TRUE}
+# keep the routes with (sd > 5min=300s) or (sd/mean > 1/3)
+data_by_route = data_by_route[which(
+    (data_by_route$duration_sd>300)|(data_by_route$duration_sd/data_by_route$duration_mean>1/3)), ]
+nrow(data_by_route)  # 6641
+12179 - 6641
+```
+
+After removing thee routes, there are finally 6641 distinct routes left, while 5538 routes have been removed from the orignal data.
+
+
+
+
+### (3) Finally selected routes
+
+```{r}
+# all finally selected routes
+routes = unique(data_by_route$route)
+
+# keep only the selected routes in the origianl data
+our_data = new_data[new_data$route %in% routes, ]
+nrow(our_data)  # 655290
+655290/729321  # 0.8984933
+```
+
+
+After removing the above routes from origal data, now there are 655290 data points left, which is about 90% of the original data.
+
+Therefore, though we have removed many routes, most of the data points have been kept.
+
+
+
+
+
+
+
+## 3. Permutation Test (no controlling for confounders)
+
+```{r}
+# compute T_stat of all unique routes before permutation
+# this is for easier use for permutation tests controlling for weekday
+T_stats = data.frame(route=rep(NA,length(routes)), T_stat=rep(NA,length(routes)))
+for (i in 1:length(routes)) {
+    route_data = our_data[our_data$route==routes[i], ]
+    T_stats[i,"route"] = routes[i]
+    T_stats[i,"T_stat"] = abs(cor(route_data$average_duration, 
+                                  route_data$days_since_Jan1_2010))
+}
+str(T_stats)
+```
+
+
+```{r}
+set.seed(123)
+results = matrix(NA,length(routes),4)
+colnames(results) = c("route","station_start","station_end","no_control")
+
+for (i in 1:length(routes)) {
+    route_data = our_data[our_data$route==routes[i], ]
+    results[i,1:3] = c(routes[i], route_data$station_start[1], route_data$station_end[1])
+    
+    duration = route_data$average_duration
+    days = route_data$days_since_Jan1_2010
+    
+    T_perms = rep(0,500)  # 500 permutations
+    for (k in 1:500) {
+        duration_perm = sample(duration, replace=FALSE)
+        T_perms[k] = abs(cor(duration_perm, days))
+    }
+    T = T_stats[T_stats$route==routes[i], "T_stat"]
+    results[i,4] = (1+sum(T_perms>=T))/(1+500)
+}
+```
+
+```{r}
+# change the data type of the reported results
+df_results = data.frame(results)
+for (i in 1:3) {
+    df_results[,i] = as.character(df_results[,i])
+}
+df_results$no_control = as.numeric(as.character(df_results$no_control))
+str(df_results)
+```
+
+```{r,eval=TRUE}
+# histogram of p-values
+hist(df_results$no_control, xlab="p_value", 
+     main='p-values of permutation test (no control)', breaks=20)
+```
+
+
+
+```{r,eval=TRUE}
+# routes with significant changes
+sum(df_results$no_control<=0.05)  # 893 (level=0.05)
+sum(df_results$no_control<=0.1)  # 1324 (level=0.1)
+```
+
+
+
+```{r,eval=TRUE}
+min_day = min(our_data$days_since_Jan1_2010)
+max_day = max(our_data$days_since_Jan1_2010)
+
+# order the p_values
+results_order = df_results[order(df_results$no_control), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = results_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+
+
+# plot several most non-significant routes
+par(mfrow=c(3,3))
+n = nrow(results_order)
+for (i in 1:9) {
+    route = results_order[n+1-i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+
+
+
+## 4. Permutation test (controlling for weekday)
+
+```{r}
+# assign weekdays & weekends
+our_data["weekday"] = TRUE
+our_data[(our_data$day_of_week=="Sunday")|(our_data$day_of_week=="Saturday"), "weekday"] = FALSE
+
+mean(our_data$weekday)  # 0.7428268
+```
+
+There are about 74% data points are the weekdays' data.
+
+
+```{r}
+df_results[,"weekday"] = rep(NA,nrow(df_results))
+
+set.seed(123)
+for (i in 1:nrow(df_results)) {
+    route_data = our_data[our_data$route==df_results$route[i], ]
+    
+    duration = route_data$average_duration
+    
+    T_perms = rep(0,500)  # 500 permutations
+    for (k in 1:500) {
+        sim = route_data
+        
+        if(sum(route_data$weekday)>1){
+            sim[sim$weekday,"average_duration"] = sample(duration[route_data$weekday])
+        }
+        if(sum(!route_data$weekday)>1){
+            sim[!sim$weekday,"average_duration"] = sample(duration[!route_data$weekday])
+        }
+        
+        T_perms[k] = abs(cor(sim$average_duration, route_data$days_since_Jan1_2010))
+    }
+    
+    T = T_stats[T_stats$route==df_results$route[i], "T_stat"]
+    df_results[i,"weekday"] = (1+sum(T_perms>=T))/(1+500)
+    
+    print(i)
+}
+```
+
+
+```{r,eval=TRUE}
+# histogram of p-values
+hist(df_results$weekday, xlab="p_value", 
+     main='p-values of permutation test (control for weekday)', breaks=20)
+```
+
+
+
+```{r,eval=TRUE}
+# routes with significant changes
+sum(df_results$weekday<=0.05, na.rm=TRUE)  # 830 (level=0.05)
+sum(df_results$weekday<=0.1, na.rm=TRUE)  # 1238 (level=0.1)
+```
+
+
+
+```{r,eval=TRUE}
+# order the p_values
+weekday_order = df_results[order(df_results$weekday), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = weekday_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+
+
+# plot several most non-significant routes
+par(mfrow=c(3,3))
+n = nrow(weekday_order)
+for (i in 1:9) {
+    route = weekday_order[n+1-i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+
+
+
+
+## 5. Permutation test (controlling for member)
+
+```{r}
+# aggregate data by route, day, member
+member_data = data %>% group_by(station_start,station_end,year,month,day,member) %>% 
+    summarise(average_duration=mean(duration), count=length(as.vector(duration)),
+              route = unique(route), day_of_week=unique(day_of_week),
+              days_since_Jan1_2010=unique(days_since_Jan1_2010))
+```
+
+```{r}
+# keep only the selected routes data
+member_data = member_data[member_data$route %in% routes, ]
+nrow(member_data)  # 726701
+mean(member_data$member)  # 0.7953188
+```
+
+There are about 80% data points are the members' data.
+
+
+```{r}
+# compute T_stat of all unique routes before permutation (while seperating members & nonmembers)
+# this is for easier use for permutation tests controlling for member & weekday
+T_stats_member = data.frame(route=rep(NA,length(routes)), 
+                            T_stat_member=rep(NA,length(routes)))
+for (i in 1:length(routes)) {
+    route_data = member_data[member_data$route==routes[i], ]
+    T_stats_member[i,"route"] = routes[i]
+    T_stats_member[i,"T_stat_member"] = abs(cor(route_data$average_duration, 
+                                         route_data$days_since_Jan1_2010))
+}
+str(T_stats_member)
+```
+
+
+```{r}
+df_results[,"member"] = rep(NA,nrow(df_results))
+
+set.seed(123)
+for (i in 1:nrow(df_results)) {
+    route_data = member_data[member_data$route==df_results$route[i], ]
+    
+    duration = route_data$average_duration
+    
+    T_perms = rep(0,500)  # 500 permutations
+    for (k in 1:500) {
+        sim = route_data
+        
+        if(sum(route_data$member)>1){
+            sim[sim$member,"average_duration"] = sample(duration[route_data$member])
+        }
+        if(sum(!route_data$member)>1){
+            sim[!sim$member,"average_duration"] = sample(duration[!route_data$member])
+        }
+        
+        T_perms[k] = abs(cor(sim$average_duration, route_data$days_since_Jan1_2010))
+    }
+    
+    T = T_stats_member[T_stats_member$route==df_results$route[i], "T_stat_member"]
+    df_results[i,"member"] = (1+sum(T_perms>=T))/(1+500)
+    
+    print(i)
+}
+```
+
+
+```{r,eval=TRUE}
+# histogram of p-values
+hist(df_results$member, xlab="p_value", 
+     main='p-values of permutation test (control for member)', breaks=20)
+```
+
+
+
+```{r,eval=TRUE}
+# routes with significant changes
+sum(df_results$member<=0.05, na.rm=TRUE)  # 726 (level=0.05)
+sum(df_results$member<=0.1, na.rm=TRUE)  # 1146 (level=0.1)
+```
+
+
+
+```{r,eval=TRUE}
+# order the p_values
+member_order = df_results[order(df_results$member), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = member_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+
+
+# plot several most non-significant routes
+par(mfrow=c(3,3))
+n = nrow(member_order)
+for (i in 1:9) {
+    route = member_order[n+1-i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+
+
+## 6. Permutation test (controlling for member and weekday)
+
+```{r}
+# assign weekdays & weekends
+member_data["weekday"] = TRUE
+member_data[(member_data$day_of_week=="Sunday")|(member_data$day_of_week=="Saturday"), "weekday"] = FALSE
+
+mean(member_data$weekday)  # 0.7299357
+```
+
+There are about 73% data points are the weekdays' data.
+
+
+```{r}
+df_results[,"member_weekday"] = rep(NA,nrow(df_results))
+
+set.seed(123)
+for (i in 1:nrow(df_results)) { 
+    route_data = member_data[member_data$route==df_results$route[i], ]
+    
+    duration = route_data$average_duration
+    
+    T_perms = rep(0,500)  # 500 permutations
+    for (k in 1:500) {
+        sim = route_data
+        
+        if(sum((route_data$member) & (route_data$weekday))>1){
+            sim[(sim$member) & (sim$weekday), "average_duration"] = sample(
+            duration[(route_data$member) & (route_data$weekday)])
+        }
+        if(sum((route_data$member) & (!route_data$weekday))>1){
+            sim[(sim$member) & (!sim$weekday), "average_duration"] = sample(
+            duration[(route_data$member) & (!route_data$weekday)])
+        }
+        if(sum((!route_data$member) & (route_data$weekday))>1){
+            sim[(!sim$member) & (sim$weekday), "average_duration"] = sample(
+            duration[(!route_data$member) & (route_data$weekday)])
+        }
+        if(sum((!route_data$member) & (!route_data$weekday))>1){
+            sim[(!sim$member) & (!sim$weekday), "average_duration"] = sample(
+            duration[(!route_data$member) & (!route_data$weekday)])
+        }
+        
+        T_perms[k] = abs(cor(sim$average_duration, route_data$days_since_Jan1_2010))
+    }
+    
+    T = T_stats_member[T_stats_member$route==df_results$route[i], "T_stat_member"]
+    df_results[i,"member_weekday"] = (1+sum(T_perms>=T))/(1+500)
+    
+    print(i)
+}
+```
+
+
+```{r,eval=TRUE}
+# histogram of p-values
+hist(df_results$member_weekday, xlab="p_value", 
+     main='p-values of permutation test (control for member & weekday)', breaks=20)
+```
+
+
+
+```{r,eval=TRUE}
+# routes with significant changes
+sum(df_results$member_weekday<=0.05, na.rm=TRUE)  # 692  (level=0.05)
+sum(df_results$member_weekday<=0.1, na.rm=TRUE)  # 1130 (level=0.1)
+```
+
+
+
+```{r,eval=TRUE}
+# order the p_values
+member_weekday_order = df_results[order(df_results$member_weekday), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = member_weekday_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+
+
+# plot several most non-significant routes
+par(mfrow=c(3,3))
+n = nrow(member_weekday_order)
+for (i in 1:9) {
+    route = member_weekday_order[n+1-i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+
+
+## 7. Combine results
+
+```{r,eval=TRUE}
+# report the number of significant cases (p<=0.05)
+report = data.frame(group=c("no_control","weekday","member","member_weekday"),
+                    sig_p=rep(NA,4),non_sig_p=rep(NA,4),NAs=rep(NA,4),total=rep(NA,4))
+for (i in 1:4) {
+    report[i,2] = sum(df_results[,i+3]<=0.05, na.rm=TRUE)
+    report[i,3] = sum(df_results[,i+3]>0.05, na.rm=TRUE)
+    report[i,4] = sum(is.na(df_results[,i+3]))
+    report[i,5] = sum(report[i,2:4])
+}
+report
+```
+
+
+
+
+
+
+## 8. Modified BH method to control FDR
+
+
+```{r,eval=TRUE}
+# modified BH method
+modified_BH = function(P, alpha, gamma){
+    n = length(P)
+    order_index = order(P, decreasing=FALSE)
+    pi_hat = sum(P>gamma)/n/(1-gamma)
+    P[P>gamma] = Inf   # never reject any p > gamma
+    ks = which(P[order_index] <= (1:n)*alpha/n/pi_hat)
+    if(length(ks)==0){
+        return(NULL)
+    }else{
+        k = max(ks)
+        rej_index = order_index[1:k]
+        return(rej_index)
+    }
+}
+```
+
+
+Like in Homework 2, we use a modified BH method to control FDR with level $\alpha=0.1$ and $\gamma=0.5$. So we aim to output a list of discoveries with FDP $\leq \alpha=0.1$.
+
+```{r,eval=TRUE}
+df_results[,"no_control_BH"] = rep(FALSE,nrow(df_results))
+df_results[,"weekday_BH"] = rep(FALSE,nrow(df_results))
+df_results[,"member_BH"] = rep(FALSE,nrow(df_results))
+df_results[,"member_weekday_BH"] = rep(FALSE,nrow(df_results))
+
+# FALSE = do NOT reject the null, 
+# TRUE = reject the null, i.e. discovery with significant duration change
+alpha = 0.1
+gamma = 0.5
+for (i in 1:4) {
+    reject_index = modified_BH(df_results[,i+3], alpha, gamma)
+    df_results[reject_index,i+7] = TRUE
+}
+```
+
+
+```{r,eval=TRUE}
+# report the number of significant cases (reject=TRUE in BH method)
+report_BH = data.frame(group=c("no_control_BH","weekday_BH","member_BH","member_weekday_BH"), 
+                       sig_p=rep(NA,4),non_sig_p=rep(NA,4),NAs=rep(NA,4),total=rep(NA,4))
+for (i in 1:4) {
+    report_BH[i,2] = sum(df_results[,i+7], na.rm=TRUE)
+    report_BH[i,3] = sum(!df_results[,i+7], na.rm=TRUE)
+    report_BH[i,4] = sum(is.na(df_results[,i+3]))
+    report_BH[i,5] = sum(report_BH[i,2:4])
+}
+report_BH
+```
+
+
+
+```{r, eval=TRUE}
+# significant routes determined by permutation test controlling for weekday
+sig_perm_weekday = df_results[df_results$weekday_BH, ]
+```
+
+
+
+
+
+
+
+
+## 9. Linear Regression
+
+### (1) Regress average duration only on date
+
+```{r}
+df_lr = data.frame(route=rep(NA,length(routes)), coef_date=rep(NA,length(routes)),
+                   date_p=rep(NA,length(routes)))
+
+for (i in 1:length(routes)) {
+    route_data = our_data[our_data$route==routes[i], ]
+    model = lm(average_duration~days_since_Jan1_2010, route_data)
+    coefs = summary(model)$coefficients
+    df_lr[i,1] = routes[i]
+    df_lr[i,c("coef_date","date_p")] = c(coefs[2,1],coefs[2,4])
+}
+```
+
+
+```{r}
+# modified BH method for controlling FDR
+df_lr[,"date_p_BH"] = FALSE
+reject_index = modified_BH(df_lr[,"date_p"], alpha=0.1, gamma=0.5)
+df_lr[reject_index,"date_p_BH"] = TRUE
+```
+
+
+```{r, eval=TRUE}
+# histogram of p-values
+hist(df_lr$date_p, xlab="p_value", 
+     main='p-values of linear regression', breaks=20)
+```
+
+```{r, eval=TRUE}
+# routes with significant changes
+sum(df_lr$date_p<=0.05)  # 852  (level=0.05)
+sum(df_lr$date_p_BH) # 180   (BH control)
+```
+
+```{r, eval=TRUE}
+sig_lr = df_lr[df_lr$date_p_BH, ]
+```
+
+
+```{r,eval=TRUE}
+# order the p_values
+sig_lr_order = sig_lr[order(sig_lr$date_p), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = sig_lr_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+### (2) Regress average duration on date, weekday
+
+```{r}
+df_lr_weekday = data.frame(route=rep(NA,length(routes)), coef_date=rep(NA,length(routes)),
+                   date_p=rep(NA,length(routes)), coef_weeday=rep(NA,length(routes)),
+                   weekday_p=rep(NA,length(routes)) )    
+
+for (i in 1:length(routes)) { 
+    route_data = our_data[our_data$route==routes[i], ]
+    model = lm(average_duration~days_since_Jan1_2010 + weekday, route_data)
+    coefs = summary(model)$coefficients
+    df_lr_weekday[i,1] = routes[i]
+    df_lr_weekday[i,c("coef_date","date_p")] = c(coefs[2,1],coefs[2,4])
+    if(nrow(coefs)>2){
+        df_lr_weekday[i,c("coef_weeday","weekday_p")] = c(coefs[3,1],coefs[3,4])
+    }
+}
+
+index = which(is.na(df_lr_weekday$coef_weeday))
+df_lr_weekday2 = df_lr_weekday[-index,]
+```
+
+
+```{r}
+# modified BH method for controlling FDR
+df_lr_weekday2[,"date_p_BH"] = FALSE
+reject_index = modified_BH(df_lr_weekday2[,"date_p"], alpha=0.1, gamma=0.5)
+df_lr_weekday2[reject_index,"date_p_BH"] = TRUE
+```
+
+
+```{r, eval=TRUE}
+# histogram of p-values
+hist(df_lr_weekday2$date_p, xlab="p_value", 
+     main='p-values of linear regression (control for weekday)', breaks=20)
+```
+
+```{r, eval=TRUE}
+# routes with significant changes
+sum(df_lr_weekday2$date_p<=0.05)  # 807  (level=0.05)
+sum(df_lr_weekday2$date_p_BH) # 120   (BH control)
+```
+
+```{r, eval=TRUE}
+sig_weekday = df_lr_weekday2[df_lr_weekday2$date_p_BH, ]
+sum(sig_weekday$weekday_p<=0.1)
+sum(sig_weekday$weekday_p<=0.05)
+```
+
+```{r,eval=TRUE}
+# order the p_values
+sig_weekday_order = sig_weekday[order(sig_weekday$date_p), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = sig_weekday_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+### (3) Regress average duration on date, member
+
+```{r}
+df_lr_member = data.frame(route=rep(NA,length(routes)), coef_date=rep(NA,length(routes)),
+                   date_p=rep(NA,length(routes)), coef_member=rep(NA,length(routes)),
+                   member_p=rep(NA,length(routes)) )    
+
+for (i in 1:length(routes)) { 
+    route_data = member_data[member_data$route==routes[i], ]
+    model = lm(average_duration~days_since_Jan1_2010 + member, route_data)
+    coefs = summary(model)$coefficients
+    df_lr_member[i,1] = routes[i]
+    df_lr_member[i,c("coef_date","date_p")] = c(coefs[2,1],coefs[2,4])
+    if(nrow(coefs)==3){
+        df_lr_member[i,c("coef_member","member_p")] = c(coefs[3,1],coefs[3,4])
+    }
+}
+
+index = which(is.na(df_lr_member$coef_member))
+df_lr_member2 = df_lr_member[-index, ]
+```
+
+
+```{r}
+# modified BH method for controlling FDR
+df_lr_member2[,"date_p_BH"] = FALSE
+reject_index = modified_BH(df_lr_member2[,"date_p"], alpha=0.1, gamma=0.5)
+df_lr_member2[reject_index,"date_p_BH"] = TRUE
+```
+
+
+```{r,eval=TRUE}
+# histogram of p-values
+hist(df_lr_member2$date_p, xlab="p_value", 
+     main='p-values of linear regression (control for member)', breaks=20)
+```
+
+```{r, eval=TRUE}
+# routes with significant changes
+sum(df_lr_member2$date_p<=0.05)  # 633  (level=0.05)
+sum(df_lr_member2$date_p_BH) # 77   (BH control)
+```
+
+```{r, eval=TRUE}
+sig_member = df_lr_member2[df_lr_member2$date_p_BH, ]
+sum(sig_member$member_p<=0.1)
+sum(sig_member$member_p<=0.05)
+```
+
+```{r,eval=TRUE}
+# order the p_values
+sig_member_order = sig_member[order(sig_member$date_p), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = sig_member_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+
+### (4) Regress average duration on date, member, weekday
+
+```{r}
+df_lr_member_weekday = data.frame(route=rep(NA,length(routes)), coef_date=rep(NA,length(routes)),
+                   date_p=rep(NA,length(routes)), coef_member=rep(NA,length(routes)),
+                   member_p=rep(NA,length(routes)), coef_weekday=rep(NA,length(routes)),
+                   weekday_p=rep(NA,length(routes)) )    
+
+for (i in 1:length(routes)) { 
+    route_data = member_data[member_data$route==routes[i], ]
+    model = lm(average_duration~days_since_Jan1_2010 + member + weekday, route_data)
+    coefs = summary(model)$coefficients
+    df_lr_member_weekday[i,1] = routes[i]
+    df_lr_member_weekday[i,c("coef_date","date_p")] = c(coefs[2,1],coefs[2,4])
+    if(nrow(coefs)==4){
+        df_lr_member_weekday[i,c("coef_member","member_p")] = c(coefs[3,1],coefs[3,4])
+        df_lr_member_weekday[i,c("coef_weekday","weekday_p")] = c(coefs[4,1],coefs[4,4])
+    }
+}
+
+index = which(is.na(df_lr_member_weekday$coef_member))
+df_lr_member_weekday2 = df_lr_member_weekday[-index, ]
+```
+
+
+```{r}
+# modified BH method for controlling FDR
+df_lr_member_weekday2[,"date_p_BH"] = FALSE
+reject_index = modified_BH(df_lr_member_weekday2[,"date_p"], alpha=0.1, gamma=0.5)
+df_lr_member_weekday2[reject_index,"date_p_BH"] = TRUE
+```
+
+
+```{r,eval=TRUE}
+# histogram of p-values
+hist(df_lr_member_weekday2$date_p, xlab="p_value", 
+     main='p-values of linear regression (control for member & weekday)', breaks=20)
+```
+
+```{r, eval=TRUE}
+# routes with significant changes
+sum(df_lr_member_weekday2$date_p<=0.05)  # 637  (level=0.05)
+sum(df_lr_member_weekday2$date_p_BH) # 62   (BH control)
+```
+
+```{r, eval=TRUE}
+sig_member_weekday = df_lr_member_weekday2[df_lr_member_weekday2$date_p_BH, ]
+sum((sig_member_weekday$member_p<=0.1) & (sig_member_weekday$weekday_p<=0.1))
+sum((sig_member_weekday$member_p<=0.05) & (sig_member_weekday$weekday_p<=0.05))
+```
+
+```{r,eval=TRUE}
+# order the p_values
+sig_member_weekday_order = sig_member_weekday[order(sig_member_weekday$date_p), ]
+
+# plot several most significant routes
+par(mfrow=c(3,3))
+for (i in 1:9) {
+    route = sig_member_weekday_order[i,1]
+    route_data = our_data[our_data$route==route, ]
+    plot(route_data$days_since_Jan1_2010, route_data$average_duration, 
+         xlab="days since Jan1 2020", ylab="average duration",
+         xlim=c(min_day,max_day), main=route)
+}
+```
+
+
+
+
+
+
+
+### (5) Combine results
+
+```{r,eval=TRUE}
+# report the number of significant cases (reject=TRUE in BH method)
+report_lr = data.frame(group=c("no_control","weekday","member","member_weekday"), 
+                       sig_p=rep(NA,4), sig_p_BH=rep(NA,4))
+report_lr[1,2:3] = c(sum(df_lr$date_p<=0.05), sum(df_lr$date_p_BH))
+report_lr[2,2:3] = c(sum(df_lr_weekday2$date_p<=0.05),sum(df_lr_weekday2$date_p_BH))
+report_lr[3,2:3] = c(sum(df_lr_member2$date_p<=0.05),sum(df_lr_member2$date_p_BH))
+report_lr[4,2:3] = c(sum(df_lr_member_weekday2$date_p<=0.05),sum(df_lr_member_weekday2$date_p_BH))
+report_lr
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

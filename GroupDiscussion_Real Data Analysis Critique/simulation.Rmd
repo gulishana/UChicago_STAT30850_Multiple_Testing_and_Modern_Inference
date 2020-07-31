@@ -1,0 +1,71 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+peer = c(rep(0,100), rep(1,100), rep(0,100))
+adult = c(rep(0,100), rep(0,100), rep(1,100))
+
+inds = matrix(0,300,11)
+for (i in 1:11) {
+    ind_i = rep(0,300)
+    ind_i[(212+(i-1)*8+1):(212+i*8)] = rep(1,8)
+    inds[,i] = ind_i
+}
+```
+
+
+```{r}
+set.seed(1)
+p_1 = p_2 = rep(0,1000)
+
+for (i in 1:1000) {
+    y = rnorm(300)
+
+    mod1 = lm(y ~ peer+adult)
+    p_1[i] = summary(mod1)$coefficients[3,4]
+
+    mod2 = lm(y ~ peer+adult+inds)
+    # same as: lm(y ~ peer+adult+adult:inds)
+    p_2[i] = summary(mod2)$coefficients[3,4]
+}
+```
+
+
+```{r}
+boxplot(p_1,p_2)
+t.test(p_1, p_2, mu=0, paired=TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

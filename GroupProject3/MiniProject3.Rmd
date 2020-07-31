@@ -1,0 +1,913 @@
+---
+title: "STAT30850 MiniProject 3"
+author: "Sarah Adilijiang, Yanqing Gui, Hanyang Peng"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.align='center', warning=FALSE, message=FALSE, 
+                      echo=TRUE, eval=TRUE)
+```
+
+
+```{r, eval=FALSE}
+save(dist_df, p_val1, p_val2, p_val3,
+     file='MiniProject3.RData')
+```
+
+```{r}
+load('MiniProject3.RData')
+```
+
+
+
+
+
+# Problem 1
+
+## 1. Data Preprocessing
+
+### Check missing value
+```{r}
+load('data1.RData')
+nrow(data1)
+sum(is.na(data1))
+```
+
+There are 3025 rows in data1. And there are no missing values in this clean data anymore.
+
+
+### Add date & day-of-week
+```{r}
+# add date
+data1$date = paste0(data1$year,"-",data1$month,"-",data1$day)
+data1$date = as.Date(data1$date)
+print(paste("Date is from",min(data1$date),"to",max(data1$date)))  # "2016-10-04" to "2019-10-03"
+data1$days_since_20161003 = data1$date - as.Date("2016-10-03")
+
+# add day-of-weeks
+data1$dayofweek = weekdays(data1$date)
+```
+
+### Convert the risk_category into ordinal numbers
+```{r}
+data1$risk_category[data1$risk_category=="None"] = 1
+data1$risk_category[data1$risk_category=="Low Risk"] = 2
+data1$risk_category[data1$risk_category=="Moderate Risk"] = 3
+data1$risk_category[data1$risk_category=="High Risk"] = 4
+data1$risk_category = as.numeric(data1$risk_category)
+#str(data1)
+```
+
+
+### Deal with multiple risk entries of a restaurant in the same day
+```{r}
+# aggregate data by business_id, date
+library(dplyr)
+data2 = data1 %>% group_by(business_id, date) %>% 
+    summarise(days_since_20161003=unique(days_since_20161003), dayofweek = unique(dayofweek),
+              year=unique(year), month=unique(month), day=unique(day),
+              inspection_score=unique(inspection_score),
+              sum_risk=sum(risk_category), risk_count=length(as.vector(risk_category)),
+              zipcode=unique(zipcode), latitude=unique(latitude), longitude=unique(longitude) )
+nrow(data2)  # 1905
+```
+
+There are 1905 unique inspections in total.
+
+
+
+
+
+
+## 2. Exploratory Data Analysis
+
+### Aggregate data by date
+
+```{r}
+# aggregate data by date
+data3 = data2 %>% group_by(date) %>% summarise(id_count = length(as.vector(business_id)))
+nrow(data3)  # 644
+t(count(data3, id_count))
+```
+
+There are 644 unique dates, among which 169 dates have only one unique inspection. The largest number of inspections carried out in one day is 12 restaurants.
+
+
+
+### Aggregate data by business_id
+
+```{r}
+# aggregate data by business_id
+data4 = data2 %>% group_by(business_id) %>% 
+    summarise(date_count = length(as.vector(date)), 
+              zipcode=unique(zipcode), latitude=unique(latitude), longitude=unique(longitude))
+n_id = nrow(data4); n_id  # 997
+ids = data4$business_id   # all unqiue business_id's
+t(count(data4, date_count))
+```
+
+There are 997 unique restaurants, among which larget proportion of (385) restaurants have been inspected only once. The largest number of days of inspections carried out for one restaurant is 5 days in total.
+
+
+
+
+### Locations of unique restaurants
+
+```{r, fig.width=12, fig.height=7}
+plot(data4$longitude, data4$latitude, col=data4$date_count, lwd=ifelse(data4$date_count>2,2,1),
+     cex=1.2, xlab="longitude", ylab="latitude", main="Locations of Unique Restaurants")
+legend("topleft",legend=c('1 day','2 days','3 days','4 days','5 days'), 
+        pch=1, col=1:5, cex=1)
+```
+
+```{r}
+# two outlier-like points
+data4[data4$longitude>-122.38, ]
+```
+
+The two outlier-like locations are located at the Treasure Island, which is a little away form the main San Francisco area, isolated by the seawater.
+
+
+```{r}
+# aggregate data by zipcode
+zipcode_count = data4 %>% group_by(zipcode) %>% 
+    summarise(id_count = length(as.vector(business_id)), day_mean = mean(date_count))
+nrow(zipcode_count)  # 32
+barplot(zipcode_count$day_mean, names.arg=zipcode_count$zipcode, 
+        xlab="zipcode", ylab="mean of days", main="Inspection frequency by zipcode",
+        col=ifelse((zipcode_count$day_mean==1)|(zipcode_count$day_mean==3),"lightblue","grey"))
+```
+
+```{r}
+t(count(zipcode_count, id_count))
+```
+
+
+```{r}
+zipcode_count[(zipcode_count$day_mean==1)|(zipcode_count$day_mean==3), ]
+```
+
+
+
+
+
+### Overall frequency of inspections
+
+```{r, fig.width=12, fig.height=5}
+plot(data3$date, data3$id_count, type="l", xlab=,
+     ylab="number of inspections per day", main="Overall frequency of inspections")
+
+library(rpart)
+tree = rpart(id_count ~ date, data3)
+xx = seq(as.Date("2016-10-04"),as.Date("2019-10-03"),1)
+pred = predict(tree,data.frame(date=xx))
+lines(xx, pred, col=2, lwd=2)
+legend("topleft",legend="piece-wise constant partitioning",col=2, lty=1, lwd=2)
+```
+
+```{r}
+# find the knots
+preds = data.frame(xx=xx,pred=pred)
+knots = data.frame(start_date=rep(NA,7),value=rep(NA,7))
+knots[1,] = c(as.character(preds$xx[1]), round(preds$pred[1],3))
+k=2
+for (i in 2:nrow(preds)) {
+    diff = preds$pred[i] - preds$pred[i-1]
+    if (diff!=0){
+        knots[k,] = c(as.character(preds$xx[i]), round(preds$pred[i],3))
+        k = k+1
+    }
+}
+knots$start_date = as.Date(knots$start_date)
+knots$season = 1:7
+knots
+```
+
+```{r}
+# add season into data2
+for(i in 1:length(knots$start_date)){
+  if(i<length(knots$start_date)){
+    data2$season[data2$date>=knots$start_date[i] & 
+                 data2$date<knots$start_date[i+1]] = i
+  }
+  else{
+    data2$season[data2$date>=knots$start_date[i]] = i
+  }
+}
+```
+
+
+
+
+
+
+### Inspection frequency by year, month
+
+```{r, fig.width=12, fig.height=5}
+data2$yearmonth = paste0(data2$year,"-",data2$month,"-1")
+data2$yearmonth = as.Date(data2$yearmonth)
+yearmonth_count = data2 %>% group_by(yearmonth) %>% summarise(count = length(as.vector(business_id)))
+
+plot(yearmonth_count$yearmonth, yearmonth_count$count, type="l", xlab="year-month",
+     ylab="number of inspections per month", main="Inspection frequency by year-month")
+```
+
+
+
+### Inspection frequency by day-of-week
+
+```{r}
+dayofweek_count = data2 %>% group_by(dayofweek) %>% summarise(count = length(as.vector(business_id)))
+dayofweek_count = dayofweek_count[order(dayofweek_count$count,decreasing=TRUE), ]
+barplot(dayofweek_count$count, names.arg=dayofweek_count$dayofweek, 
+        xlab="day of week", ylab="number of inspections", main="Inspection frequency by day-of-week")
+```
+
+Group (Wednesday, Tuesday) as group1, group (Thursday, Monday) as group2, Group (Friday, Saturday) as group3.
+
+```{r}
+# add day-of-week group into data2
+data2$dayofweek_group[(data2$dayofweek=="Wednesday") | data2$dayofweek=="Tuesday"] = 1
+data2$dayofweek_group[(data2$dayofweek=="Thursday") | data2$dayofweek=="Monday"] = 2
+data2$dayofweek_group[(data2$dayofweek=="Friday") | data2$dayofweek=="Saturday"] = 3
+```
+
+
+
+
+
+
+## 3. Pairwise distances and number of same_day inspections
+
+### Calculate pairwise distances
+
+```{r}
+# calculate pairwise distances
+data4$latitude_in_mile = data4$latitude * 69
+data4$longitude_in_mile = data4$longitude * 55
+x = data4[,c("latitude_in_mile","longitude_in_mile")]
+distance = as.matrix(dist(x, method="euclidean"))
+dim(distance)  # 997 * 997 symetric matrix
+
+# number of pairs of restaurants
+n_pair = choose(n_id,2); n_pair  # n_id * (n_id-1) /2 = 496506
+```
+
+```{r, eval=FALSE}
+# save distance in a vector
+dist_df = data.frame(id1=rep(NA,n_pair),id2=rep(NA,n_pair),
+                     dist=rep(NA,n_pair),same_day_cnt=rep(NA,n_pair))
+k=1
+for (i in 1:nrow(distance)) {
+    for (j in 1:ncol(distance)) {
+        if(i<j){
+            dist_df$dist[k] = distance[i,j]
+            dist_df$id1[k] = ids[i]
+            dist_df$id2[k] = ids[j]
+            k = k+1
+        }
+    }
+}
+dist_df = dist_df[order(dist_df$dist), ]
+```
+
+```{r}
+# check results
+sum(is.na(dist_df[,1:3]))
+```
+
+
+
+### Calculate number of same_day inspections
+
+```{r}
+# calculate same_day_count
+same_day = matrix(0,nrow=n_id,ncol=n_id)
+for(i in 1:n_id){
+  dates = data2$date[data2$business_id==ids[i]]
+  for(j in 1:length(dates)){
+    comp = data2$business_id[data2$date==dates[j]]
+    for(k in 1:length(comp)){
+      same_day[i,which(ids==comp[k])] = same_day[i,which(ids==comp[k])]+1
+    }
+  }
+}
+sum(diag(same_day)!=data4$date_count)  # 0
+( sum(same_day)-sum(diag(same_day)) )/2  # 2956
+```
+
+```{r, eval=FALSE}
+# add same_day_count into dist_df
+dist_df$same_day_cnt = rep(0,n_pair)
+for (i in 1:nrow(same_day)) {
+    set = which(same_day[i,]!=0)
+    for (j in 1:length(set)) {
+        dist_df$same_day_cnt[dist_df$id1==ids[i] & dist_df$id2==ids[set[j]]] = same_day[i,set[j]]
+    }
+}
+```
+
+```{r}
+count(dist_df, same_day_cnt)
+```
+
+Same_day_count is a very sparse vector.
+
+
+```{r, fig.width=12, fig.height=5}
+plot(dist_df$dist, dist_df$same_day_cnt, xlab="distance", ylab="same_day_count",
+     main="Same_day_count vs Distance")
+```
+
+
+```{r}
+sum(dist_df$same_day_cnt) # 2956
+```
+
+
+
+
+
+
+## 4. Permutation Test
+
+### Permutation test without controlling for confounders
+
+```{r}
+# compute T_stat before permutation
+T_stat = abs(cor(dist_df$dist, dist_df$same_day_cnt)); T_stat
+```
+
+
+#### (1) Only permute same_day_count, not the original dates
+
+```{r, eval=FALSE}
+# permutation test (only permute same_day_count, not the original dates)
+set.seed(123)
+n_perm = 300   # 300 permutations
+T_perms = rep(0,n_perm)
+for (k in 1:n_perm) {
+    same_day_cnt_perm = sample(dist_df$same_day_cnt, replace=FALSE)
+    T_perms[k] = abs(cor(dist_df$dist, same_day_cnt_perm))
+}
+p_val1 = (1+sum(T_perms>=T_stat))/(1+n_perm)
+#sum(T_perms==0)
+```
+
+```{r}
+p_val1
+```
+
+
+
+
+#### (2) Permute the original dates
+
+```{r, eval=FALSE}
+# permutation test (permute all the original dates)
+set.seed(123)
+data_perm = data2[,c("business_id","date")]
+dist_perm = dist_df
+
+n_perm = 300   # 300 permutations
+T_perms = rep(0,n_perm)
+for (m in 1:n_perm) {
+    
+    # permutate dates
+    data_perm$date = sample(data_perm$date, replace=FALSE)
+    
+    # calculate new same_day count
+    same_day = matrix(0,nrow=n_id,ncol=n_id)
+    for(i in 1:n_id){
+        dates = data_perm$date[data_perm$business_id==ids[i]]
+        for(j in 1:length(dates)){
+            comp = data_perm$business_id[data_perm$date==dates[j]]
+            for(k in 1:length(comp)){
+                same_day[i,which(ids==comp[k])] = same_day[i,which(ids==comp[k])] + 1
+            }
+        }
+    }
+    #print(sum(diag(same_day)!=data4$date_count))  # 0
+    #print(ids[which(diag(same_day)!=data4$date_count)])
+    #print( (sum(same_day)-sum(diag(same_day)))/2 )   # 2956
+
+    
+    # add into dist_perm
+    dist_perm$same_day_cnt = rep(0,n_pair)
+    for (i in 1:nrow(same_day)) {
+        set = which(same_day[i,]!=0)
+        for (j in 1:length(set)) {
+            dist_perm$same_day_cnt[dist_perm$id1==ids[i] & 
+                                   dist_perm$id2==ids[set[j]]] = same_day[i,set[j]]
+        }
+    }
+    #print(sum(dist_perm$same_day_cnt)) # 2956
+    
+    
+    # calculate T_perm
+    print(paste0("perm #",m,", sum of same_day_cnt: ",sum(dist_perm$same_day_cnt)))
+    if(sum(dist_perm$same_day_cnt!=0)==0){ T_perms[m]=0 }
+    else{ T_perms[m] = abs(cor(dist_perm$dist, dist_perm$same_day_cnt)) }
+}
+
+p_val2 = (1+sum(T_perms>=T_stat))/(1+n_perm)
+#sum(T_perms==0)
+```
+
+```{r}
+p_val2
+```
+
+
+
+
+
+
+### Permutation test controlling for season, dayofweek_group
+
+```{r, eval=FALSE}
+# permutation test (permute all the original dates within each subgroup)
+set.seed(123)
+data_perm = data2[,c("business_id","date","season","dayofweek_group")]
+dist_perm = dist_df
+
+n_perm = 300   # 300 permutations
+T_perms = rep(0,n_perm)
+for (m in 1:n_perm) {
+    
+    # permutate dates within each subgroup
+    date_sim = rep(NA,length(data_perm$date))
+    for (s in 1:7) {
+        for (d in 1:3) {
+            if(any(data_perm$season==s & data_perm$dayofweek_group==d)){
+                date_sim[data_perm$season==s & data_perm$dayofweek_group==d] =
+                sample(data_perm$date[data_perm$season==s & data_perm$dayofweek_group==d], replace=FALSE)
+            }
+        }
+    }
+    data_perm$date = date_sim
+    
+    # calculate new same_day count
+    same_day = matrix(0,nrow=n_id,ncol=n_id)
+    for(i in 1:n_id){
+        dates = data_perm$date[data_perm$business_id==ids[i]]
+        for(j in 1:length(dates)){
+            comp = data_perm$business_id[data_perm$date==dates[j]]
+            for(k in 1:length(comp)){
+                same_day[i,which(ids==comp[k])] = same_day[i,which(ids==comp[k])] + 1
+            }
+        }
+    }
+    #print(sum(diag(same_day)!=data4$date_count))  # 0
+    #print(ids[which(diag(same_day)!=data4$date_count)])
+    #print( (sum(same_day)-sum(diag(same_day)))/2 ) # 2956
+
+    
+    # add into dist_perm
+    dist_perm$same_day_cnt = rep(0,n_pair)
+    for (i in 1:nrow(same_day)) {
+        set = which(same_day[i,]!=0)
+        for (j in 1:length(set)) {
+            dist_perm$same_day_cnt[dist_perm$id1==ids[i] & 
+                                   dist_perm$id2==ids[set[j]]] = same_day[i,set[j]]
+        }
+    }
+    #print(sum(dist_perm$same_day_cnt)) # 2956
+
+    
+    # calculate T_perm
+    print(paste0("perm #",m,", sum of same_day_cnt: ",sum(dist_perm$same_day_cnt)))
+    if(sum(dist_perm$same_day_cnt!=0)==0){ T_perms[m]=0 }
+    else{ T_perms[m] = abs(cor(dist_perm$dist, dist_perm$same_day_cnt)) }
+}
+
+p_val3 = (1+sum(T_perms>=T_stat))/(1+n_perm)
+#sum(T_perms==0)
+```
+
+```{r}
+p_val3
+```
+
+
+
+
+
+
+
+
+
+
+# Problem 2
+
+## 1. Find appropriate nearby restaurants
+
+### (1) Define nearby distance  
+
+```{r}
+# distribution of all the distances
+summary(dist_df$dist)
+```
+
+```{r, fig.height=7, fig.width=8}
+par(mfrow=c(3,1))
+
+# constant radius = mean of distance
+nearby_cnt = rep(0,n_id)
+r = mean(dist_df$dist)
+for(i in 1:n_id){
+    nearby_cnt[i] = sum(distance[i,]<=r)-1
+}
+hist(nearby_cnt, breaks=100, main="Number of Nearby Restaurants (constant radius = mean of distance)")
+
+
+# adjusting radius, method 1
+nearby_cnt1 = rep(0,n_id)
+r = mean(dist_df$dist)
+for(i in 1:n_id){
+    n = sum(distance[i,]<=r)
+    new_r = 4 * r/sqrt(n)
+    nearby_cnt1[i] = sum(distance[i,]<=new_r)-1
+}
+hist(nearby_cnt1, breaks=100, main="Number of Nearby Restaurants (after adjusting radius, method 1)")
+#sum(nearby_cnt1==0)
+#sum(nearby_cnt1==1)
+#sum(nearby_cnt1>=50)
+```
+
+```{r, fig.width=12, fig.height=7}
+cols = function(cnt){
+    if(cnt==0){col="red"}
+    else if(cnt==1){col="blue"}
+    else if(cnt>=2 & cnt<50){col="black"}
+    else if(cnt>=50 & cnt<100){col="darkorange"}
+    else if(cnt>=100){col="mediumorchid1"}
+    return(col)
+}
+plot(data4$longitude, data4$latitude, col=sapply(nearby_cnt1,cols), cex=1.2,
+     lwd=ifelse((nearby_cnt1==0)|(nearby_cnt1==1),1.5,1), xlab="longitude", ylab="latitude",
+     main="Number of Nearby Restaurants (after adjusting radius, method 1)")
+legend("topleft", pch=1, cex=1, col=c("red","blue","black","darkorange","mediumorchid1"),
+       legend=c('nearby_cnt = 0','nearby_cnt = 1','nearby_cnt in [2,50)','nearby_cnt in [50,100)','nearby_cnt >= 100'))
+```
+
+The points with nearby_counts = 0 or 1 are reasonable. However, there are still a lot of points with near_by counts over 50. We want to adjust the radius of these points with larger strength.
+
+
+```{r, fig.height=3, fig.width=8}
+# adjusting radius, method 2
+nearby_cnt2 = rep(0,n_id)
+r = mean(dist_df$dist)
+for(i in 1:n_id){
+    n = sum(distance[i,]<=r)
+    new_r = 4 * r/sqrt(n)
+    cnt = sum(distance[i,]<=new_r)-1
+    if(cnt<10) {
+        nearby_cnt2[i] = cnt
+    }
+    else if(cnt>=10 & cnt<50) {new_r = 3 * r/sqrt(n)}
+    else{new_r = 2 * r/sqrt(n)}
+    nearby_cnt2[i] = sum(distance[i,]<=new_r)-1
+}
+hist(nearby_cnt2, breaks=100, main="Number of Nearby Restaurants (after adjusting radius, method 2)")
+#sum(nearby_cnt2==0)
+#sum(nearby_cnt2==1)
+#sum(nearby_cnt2>=50)
+```
+
+Now almost all the nearby_counts are under 50.
+
+
+```{r, fig.width=12, fig.height=7}
+cols = function(cnt){
+    if(cnt==0){col="red"}
+    else if(cnt==1){col="blue"}
+    else if(cnt>=2 & cnt<20){col="black"}
+    else if(cnt>=20 & cnt<30){col="darkorange"}
+    else if(cnt>=30){col="mediumorchid1"}
+    return(col)
+}
+plot(data4$longitude, data4$latitude, col=sapply(nearby_cnt2,cols), cex=1.2,
+     lwd=ifelse((nearby_cnt2==0)|(nearby_cnt2==1),1.5,1), xlab="longitude", ylab="latitude",
+     main="Number of Nearby Restaurants (after adjusting radius, method 2)")
+legend("topleft", pch=1, cex=1, col=c("red","blue","black","darkorange","mediumorchid1"),
+       legend=c('nearby_cnt = 0','nearby_cnt = 1','nearby_cnt in [2,20)','nearby_cnt in [20,30)','nearby_cnt >= 30'))
+```
+
+
+
+
+
+### (2) Get the nearby restaurants of each restaurant
+
+```{r}
+# each row is a restaurant, each non-NA column is its neaby restaurant
+restaurant_list = matrix(0,nrow=n_id,ncol=max(nearby_cnt2))  # max(nearby_cnt2)
+r = mean(dist_df$dist)
+for(i in 1:n_id){
+    new_dist = distance[i,]
+    new_dist[i] = Inf    # the restaurant itself removed
+    
+    n = sum(distance[i,]<=r)
+    new_r = 4 * r/sqrt(n)
+    cnt = sum(distance[i,]<=new_r)-1
+    if(cnt<10) {
+        comp = ids[new_dist<=new_r]
+        restaurant_list[i,] = c(comp,rep(NA,max(nearby_cnt2)-length(comp)))
+    }
+    else if(cnt>=10 & cnt<50) {new_r = 3 * r/sqrt(n)}
+    else{new_r = 2 * r/sqrt(n)}
+    comp = ids[new_dist<=new_r]
+    restaurant_list[i,] = c(comp,rep(NA,max(nearby_cnt2)-length(comp)))
+}
+```
+
+
+
+
+
+
+
+
+## 2. Define the future time period
+
+### Count the number of nearby restaurants that are inspected in the next 1-4 weeks
+
+(1) Consider all the dates of all the reastaurants
+
+```{r}
+# calculate the number of nearby restaurants that are inspected in the next 1-4 weeks
+time = data2[,c("business_id","date")]
+time$day28 = time$day21 = time$day14 = time$day7 = rep(NA,nrow(data2))
+days = c(7,14,21,28)
+for (i in 1:n_id) {
+    dates = time$date[time$business_id==ids[i]]
+    comp = as.vector(na.omit(restaurant_list[i,]))
+    for (j in 1:length(dates)) {
+        for (d in 1:length(days)) {
+            inspect_comp = time$business_id[(time$date>dates[j])&(time$date<=dates[j]+days[d])]
+            inspect_comp = unique(inspect_comp)
+            time[(time$business_id==ids[i])&(time$date==dates[j]),d+2] = sum(comp %in% inspect_comp)
+        }
+    }
+}
+c(sum(time$day7==0),sum(time$day14==0),sum(time$day21==0),sum(time$day28==0))
+```
+
+
+```{r, fig.height=8, fig.width=8}
+# plot histograms (removing the 0 values)
+par(mfrow=c(4,1))
+hist(time$day7[time$day7!=0], breaks=max(time$day7),
+     xlab="",main="Number of inspected nearby restaurants in the next 1 week (zero removed)")
+hist(time$day14[time$day14!=0], breaks=max(time$day14),
+     xlab="",main="Number of inspected nearby restaurants in the next 2 weeks (zero removed)")
+hist(time$day21[time$day21!=0], breaks=max(time$day21),
+     xlab="",main="Number of inspected nearby restaurants in the next 3 weeks (zero removed)")
+hist(time$day28[time$day28!=0], breaks=max(time$day28),
+     xlab="",main="Number of inspected nearby restaurants in the next 4 weeks (zero removed)")
+```
+
+
+
+(2) Then, only keep the dates with higher number of future inspected reastaurants for each restaurant
+
+```{r}
+# aggregate by business_id
+time2 = time %>% group_by(business_id) %>% 
+    summarise(date_count = length(as.vector(date)), max_comp7=max(day7), max_comp14=max(day14),
+              max_comp21=max(day21), max_comp28=max(day28))
+c(sum(time2$max_comp7==0),sum(time2$max_comp14==0),sum(time2$max_comp21==0),sum(time2$max_comp28==0))
+```
+
+```{r, fig.height=8, fig.width=8}
+# plot histograms (removing the 0 values)
+par(mfrow=c(4,1))
+hist(time2$max_comp7[time2$max_comp7!=0], breaks=max(time2$max_comp7),
+     xlab="",main="Number of inspected nearby restaurants in the next 1 week (zero removed)")
+hist(time2$max_comp14[time2$max_comp14!=0], breaks=max(time2$max_comp14),
+     xlab="",main="Number of inspected nearby restaurants in the next 2 weeks (zero removed)")
+hist(time2$max_comp21[time2$max_comp21!=0], breaks=max(time2$max_comp21),
+     xlab="",main="Number of inspected nearby restaurants in the next 3 weeks (zero removed)")
+hist(time2$max_comp28[time2$max_comp28!=0], breaks=max(time2$max_comp28),
+     xlab="",main="Number of inspected nearby restaurants in the next 4 weeks (zero removed)")
+```
+
+Therefore, it's more appropriate to choose the time period as 4 weeks.
+
+
+
+
+
+
+
+
+
+## 3. Whether the nearby restaurants improve their inspection score
+
+### (1) Explotary Data Analysis
+
+```{r, fig.width=8, fig.height=4}
+# calculate all the date_diff
+date_diff = matrix(NA,n_id,4)
+for (i in 1:n_id) {
+    dates = data2$date[data2$business_id==ids[i]]
+    for (j in 2:length(dates)) {
+        date_diff[i,j-1] = dates[j]-dates[j-1]
+    }
+}
+hist(date_diff,breaks=20, xlab="time interval (in days)",
+     main="Time interval between inspection dates of each restaurant")
+c(sum(date_diff<=7,na.rm=TRUE), sum(date_diff<=30,na.rm=TRUE))
+```
+
+So it is not appropriate to compare the inspection result of a restaurant with its own past inspection scores. 
+
+
+
+```{r}
+plot(data2$sum_risk, data2$inspection_score, xlab="sum of risk", ylab="inspection score",
+     main="Relationship between inspection score and sum of risk")
+abline(lm(data2$inspection_score~data2$sum_risk), col=2)
+```
+
+We think the inspection score is a more general measure of the overall condition of the restaurants. Lower scores indicate more and/or higher risks.
+
+
+
+
+```{r, fig.width=12, fig.height=5}
+# inspection score
+data2_order = data2[order(data2$date),]
+plot(data2_order$date, data2_order$inspection_score, type="l", xlab="date",
+     ylab="inspection score", main="Overall inspection scores")
+
+library(rpart)
+tree = rpart(inspection_score~date, data2_order)
+xx = seq(as.Date("2016-10-04"),as.Date("2019-10-03"),1)
+pred = predict(tree,data.frame(date=xx))
+lines(xx, pred, col=2, lwd=3)
+
+lines(smooth.spline(data2_order$date, data2_order$inspection_score, spar=NULL), lwd=3, col=4)
+lines(smooth.spline(data2_order$date, data2_order$inspection_score, spar=1), lwd=3, col=3)
+legend("bottomleft",legend=c("piece-wise constant partitioning","smoothing spline (spar=NULL)","smoothing spline (spar=1)"), col=c(2,4,3), lty=1)
+```
+
+The inspection score have some oscilations over the time, but there seems to have no signifianct trend of periods of distinct overall inspection scores.
+
+
+
+
+```{r, fig.width=8, fig.height=4}
+# aggregate data by zipcode
+zipcode_score = data2 %>% group_by(zipcode) %>% 
+    summarise(mean_sum_risk = mean(sum_risk), mean_inspect_score = mean(inspection_score))
+nrow(zipcode_score)  # 32
+barplot(zipcode_score$mean_inspect_score, names.arg=zipcode_score$zipcode, 
+        xlab="zipcode", ylab="sum of risk", main="Inspection score by zipcode"
+        )
+abline(h=mean(zipcode_score$mean_inspect_score), col=2)
+```
+
+There seems no significant difference of average inspection score in different zipcode area.
+
+
+
+
+
+
+### (2) Find the exact nearby restaurants that are inspected in the next 4 weeks
+
+```{r}
+# find the nearby restaurants that are inspected in the next 4 weeks
+day = 28
+res_future = matrix(NA,nrow(data2),max(time[,2+day/7])+2)
+res_future[,1:2] = as.matrix(data2[,c("business_id","date")]) # in this matrix, date is character
+for (i in 1:n_id) {
+    dates = time$date[time$business_id==ids[i]]
+    comp = as.vector(na.omit(restaurant_list[i,]))
+    for (j in 1:length(dates)) {
+        inspect_comp = data2$business_id[(data2$date>dates[j])&(data2$date<=dates[j]+day)]
+        inspect_comp = unique(inspect_comp)
+        comp_future = comp[comp %in% inspect_comp]
+        res_future[(res_future[,1]==ids[i])&(res_future[,2]==dates[j]),3:ncol(res_future)] = c(comp_future,rep(NA,max(time[,2+day/7])-length(comp_future)))
+    }
+}
+
+# check results
+sum(rowSums(!is.na(res_future[,3:ncol(res_future)])) != time[,2+day/7]) # 0
+```
+
+
+
+
+
+### (3) Compare the difference of nearby and non-nearby restaurants
+
+#### Use inspection score
+
+```{r}
+res_future_new = res_future[,-2]
+for (j in 1:nrow(data2)) {
+    id = data2$business_id[j]
+    jdate = data2$date[j]
+    inspect_near = as.vector(na.omit(res_future_new[j,])) # nearby ids
+    inspect_comp = data2$business_id[(data2$date>jdate)&(data2$date<=jdate+day)]
+    inspect_other = setdiff(inspect_comp,inspect_near)
+    near_score = integer()
+    for (i in inspect_near) {
+        iscore = data2$inspection_score[(data2$business_id==i)&(data2$date>jdate)&(data2$date<=jdate+day)]
+        near_score = c(near_score, iscore)
+    }
+    other_score = integer()
+    for (m in inspect_other) {
+        oscore = data2$inspection_score[(data2$business_id==m)&(data2$date>jdate)&(data2$date<=jdate+day)]
+        other_score = c(other_score, oscore)
+    }
+    all_score = integer()
+    for (k in inspect_comp) {
+        kscore = data2$inspection_score[(data2$business_id==k)&(data2$date>jdate)&(data2$date<=jdate+day)]
+        all_score = c(all_score, kscore)
+    }
+    data2[j,"mean_near"] = mean(near_score)
+    data2[j,"mean_other"] = mean(other_score)
+    data2[j,"mean_all"] = mean(all_score)
+}
+
+# t-test
+test_data = na.omit(data2[,c("mean_near", "mean_other", "mean_all")])
+# nearby vs all
+t.test(test_data$mean_near, test_data$mean_all, paired=TRUE, alternative="two.sided")
+t.test(test_data$mean_near, test_data$mean_all, paired=TRUE, alternative="greater")
+t.test(test_data$mean_near, test_data$mean_all, paired=TRUE, alternative="less")
+# nearby vs other
+t.test(test_data$mean_near, test_data$mean_other, paired=TRUE, alternative="two.sided")
+t.test(test_data$mean_near, test_data$mean_other, paired=TRUE, alternative="greater")
+t.test(test_data$mean_near, test_data$mean_other, paired=TRUE, alternative="less")
+```
+
+
+
+#### Use sum of risk
+
+```{r}
+res_future_new = res_future[,-2]
+for (j in 1:nrow(data2)) {
+    id = data2$business_id[j]
+    jdate = data2$date[j]
+    inspect_near = as.vector(na.omit(res_future_new[j,])) # nearby ids
+    inspect_comp = data2$business_id[(data2$date>jdate)&(data2$date<=jdate+day)]
+    inspect_other = setdiff(inspect_comp,inspect_near)
+    near_score = integer()
+    for (i in inspect_near) {
+        iscore = data2$sum_risk[(data2$business_id==i)&(data2$date>jdate)&(data2$date<=jdate+day)]
+        near_score = c(near_score, iscore)
+    }
+    other_score = integer()
+    for (m in inspect_other) {
+        oscore = data2$sum_risk[(data2$business_id==m)&(data2$date>jdate)&(data2$date<=jdate+day)]
+        other_score = c(other_score, oscore)
+    }
+    all_score = integer()
+    for (k in inspect_comp) {
+        kscore = data2$sum_risk[(data2$business_id==k)&(data2$date>jdate)&(data2$date<=jdate+day)]
+        all_score = c(all_score, kscore)
+    }
+    data2[j,"mean_near"] = mean(near_score)
+    data2[j,"mean_other"] = mean(other_score)
+    data2[j,"mean_all"] = mean(all_score)
+}
+
+# t-test
+test_data = na.omit(data2[,c("mean_near", "mean_other", "mean_all")])
+# nearby vs all
+t.test(test_data$mean_near, test_data$mean_all, paired=TRUE, alternative="two.sided")
+t.test(test_data$mean_near, test_data$mean_all, paired=TRUE, alternative="greater")
+t.test(test_data$mean_near, test_data$mean_all, paired=TRUE, alternative="less")
+# nearby vs other
+t.test(test_data$mean_near, test_data$mean_other, paired=TRUE, alternative="two.sided")
+t.test(test_data$mean_near, test_data$mean_other, paired=TRUE, alternative="greater")
+t.test(test_data$mean_near, test_data$mean_other, paired=TRUE, alternative="less")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
